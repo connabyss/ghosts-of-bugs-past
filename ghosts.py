@@ -137,9 +137,11 @@ def message(c):
     return (c["subject"] + ("\n\n" + c["body"] if c["body"] else ""))[:1500]
 
 
-# Small models lean towards "true" on yes/no questions, so the verdict is a choice of two
-# phrases, and the second ask lists them in the opposite order.
-SAME, DIFFERENT = "same bug came back", "different problem"
+# Small models lean towards "true" on yes/no questions, so the verdict is a choice of
+# phrases, and the second ask lists them in the opposite order. "The fix caused a new bug"
+# gets its own choice: without it, the model files those under "same bug".
+SAME, CAUSED, DIFFERENT = "same bug came back", "the fix caused a new bug", "different problem"
+VERDICTS = [DIFFERENT, CAUSED, SAME]
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -147,7 +149,7 @@ SCHEMA = {
         "bug_later": {"type": "string"},
         "quote_earlier": {"type": "string"},
         "quote_later": {"type": "string"},
-        "verdict": {"type": "string", "enum": [DIFFERENT, SAME]},
+        "verdict": {"type": "string", "enum": VERDICTS},
         "why": {"type": "string"},
         "epitaph": {"type": "string"},
     },
@@ -156,7 +158,7 @@ SCHEMA = {
 }
 FLIP_SCHEMA = {
     "type": "object",
-    "properties": {"verdict": {"type": "string", "enum": [SAME, DIFFERENT]},
+    "properties": {"verdict": {"type": "string", "enum": VERDICTS[::-1]},
                    "why": {"type": "string"}},
     "required": ["verdict", "why"],
 }
@@ -207,9 +209,11 @@ Reply in JSON:
 - bug_later: in a few words, the broken behavior the LATER commit fixed
 - quote_earlier: a short phrase copied word for word from the EARLIER COMMIT MESSAGE
 - quote_later: a short phrase copied word for word from the LATER COMMIT MESSAGE
-- verdict: "{DIFFERENT}" or "{SAME}". Pick "{SAME}" ONLY if bug_earlier
-  and bug_later are the same broken behavior, so the earlier fix did not hold (it was
-  incomplete, wrong, or broke again).
+- verdict, one of:
+  "{DIFFERENT}": they fix different broken behaviors, or one is not really a bug fix
+  "{CAUSED}": the earlier fix worked, but it broke something else, which the later commit fixes
+  "{SAME}": bug_earlier and bug_later are the same broken behavior, so the earlier
+  fix did not hold (it was incomplete or wrong)
 - why: one plain sentence explaining your answer
 - epitaph: one short spooky gravestone line for the bug (no numbers, no names)
 {feedback}"""
@@ -220,9 +224,11 @@ def build_flip_prompt(repo, p):
 Pick one:
 - "{SAME}": the later commit fixes the very same broken behavior again, because the
   earlier fix did not hold.
+- "{CAUSED}": the earlier fix worked, but it broke something else, which the later
+  commit fixes.
 - "{DIFFERENT}": they fix different broken behaviors, or one is not really a bug fix.
 
-Reply in JSON: verdict (one of the two phrases above), why (one plain sentence).
+Reply in JSON: verdict (one of the three phrases above), why (one plain sentence).
 """
 
 
@@ -255,8 +261,8 @@ def check(answer, p):
         for num in re.findall(r"\d+", str(answer.get(key, ""))):
             if num not in facts:
                 problems.append(f'{key} uses the number {num}, which is not in either message')
-    if answer.get("verdict") not in (SAME, DIFFERENT):
-        problems.append(f'verdict must be "{SAME}" or "{DIFFERENT}"')
+    if answer.get("verdict") not in VERDICTS:
+        problems.append("verdict must be one of: " + ", ".join(f'"{v}"' for v in VERDICTS))
     return problems
 
 
@@ -280,7 +286,7 @@ def judge(repo, model, p, trace=None):
         flip = ask_model(model, build_flip_prompt(repo, p), FLIP_SCHEMA)
         trace.append(flip)
         if not flip["same_bug"]:
-            return None, "dropped: said 'same bug', then 'different problem' when asked the other way"
+            return None, f"dropped: said 'same bug', then '{flip.get('verdict')}' when asked again"
         how += ", same answer when asked the other way"
     return answer, how
 
@@ -353,7 +359,7 @@ def main(argv=None):
         except (urllib.error.URLError, ConnectionError) as err:
             sys.exit(f"\nCan't reach Ollama at {OLLAMA_URL} ({err}). Is it running? "
                      f"Try: ollama pull {args.model}")
-        verdict = how if answer is None else ("GHOST" if answer["same_bug"] else "different bug")
+        verdict = how if answer is None else ("GHOST" if answer["same_bug"] else answer["verdict"])
         log.append(dict(earlier=p["earlier"]["sha"][:7], earlier_subject=p["earlier"]["subject"],
                         later=p["later"]["sha"][:7], later_subject=p["later"]["subject"],
                         lines=p["lines"], files=sorted(p["files"]), receipt=receipt(p),
@@ -365,7 +371,7 @@ def main(argv=None):
             ghosts.append((p, answer, how))
             print("GHOST")
         else:
-            print("different bug")
+            print(answer["verdict"])
 
     print()
     for p, answer, how in ghosts:

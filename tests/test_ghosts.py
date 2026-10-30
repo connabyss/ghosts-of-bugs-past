@@ -114,6 +114,18 @@ def test_flip_disagrees_drops_the_ghost():
     assert "No ghosts" in page
 
 
+def test_eval_labels_point_at_real_suspects():
+    import eval as ev
+    clones = os.path.join(os.path.dirname(__file__), "..", "..", "repos")
+    if not os.path.isdir(os.path.join(clones, "click")):
+        return  # needs the clones; skipped
+    for name, e, l, *_ in ev.LABELS:
+        repo = os.path.join(clones, name)
+        keys = {(p["earlier"]["sha"][:7], p["later"]["sha"][:7])
+                for p in ghosts.find_suspects(repo, ghosts.fix_commits(repo))}
+        assert (e, l) in keys, (name, e, l)
+
+
 def test_docs_and_tests_only_are_not_suspects():
     assert ghosts.NOT_CODE.search("docs/index.rst") and ghosts.NOT_CODE.search("tests/test_x.py")
     assert ghosts.NOT_CODE.search("CHANGES.rst") and ghosts.NOT_CODE.search("src/pkg/test_util.py")
