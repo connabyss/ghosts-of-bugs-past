@@ -332,7 +332,7 @@ text-align:center;box-shadow:0 10px 0 #23251f}}.rip{{font-size:28px;letter-spaci
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Find bugs that were fixed, then came back.")
     ap.add_argument("repo", nargs="?", default=".")
-    ap.add_argument("--model", default="gemma3:4b")
+    ap.add_argument("--model", default="gemma3:12b")
     ap.add_argument("--max", type=int, default=30, help="most suspects to ask the model about")
     ap.add_argument("--last", type=int, default=None, help="only look at the last N fix commits")
     args = ap.parse_args(argv)

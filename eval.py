@@ -30,7 +30,7 @@ LABELS = [
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("clones")
-    ap.add_argument("--model", default="gemma3:4b")
+    ap.add_argument("--model", default="gemma3:12b")
     ap.add_argument("--no-diffs", action="store_true", help="judge from commit messages only")
     args = ap.parse_args(argv)
     ghosts.SHOW_DIFFS = not args.no_diffs

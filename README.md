@@ -23,7 +23,7 @@ Your code never leaves your machine.
 You need Python 3.9+, git, and Ollama.
 
 ```
-ollama pull gemma3:4b
+ollama pull gemma3:12b
 git clone https://github.com/pallets/click
 python ghosts.py click
 ```
@@ -31,7 +31,7 @@ python ghosts.py click
 It prints each ghost and writes a graveyard page, `ghosts_click.html`, plus `ghosts_click_log.json` with
 everything the model said about every suspect.
 
-Options: `--model gemma3:12b` (a bigger model), `--max 30` (how many suspects to ask about),
+Options: `--model gemma3:4b` (smaller and faster, but much more of a yes-man), `--max 30` (how many suspects to ask about),
 `--last 200` (only the last 200 fix commits).
 
 ## What a ghost means, and what it doesn't
@@ -40,6 +40,21 @@ A ghost means two commits that both claim a fix, where the later one rewrote the
 the model, checked against git, says it's the same bug. It's a lead worth reading, not a verdict. Same-day
 follow-ups are skipped, and so are commits about typos, docs, formatting, and reverts, and pairs where the
 shared lines are only docs, tests or changelogs.
+
+## How good is the judge?
+
+`eval.py` asks the model about 8 pairs from click and requests that a person labelled by reading both
+commits: 2 real ghosts, 2 fixes that caused a new bug, 4 different problems. Results on one PC:
+
+| Model | Diffs shown | Real ghosts found | False ghosts |
+|---|---|---|---|
+| gemma3:4b | yes | 2 of 2 | 5 of 6 |
+| gemma3:4b | no | 1 of 2 | 2 of 6 |
+| gemma3:12b | no | 2 of 2 | 4 of 6 |
+| gemma3:12b | yes | 2 of 2 | 1 of 6 |
+
+Eight pairs is a small set, and the prompts were tuned while looking at it, so treat these as a sanity
+check, not a benchmark. In the last row, most false ghosts were stopped by the second ask, not the first.
 
 ## Self-test (no model needed)
 
