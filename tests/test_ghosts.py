@@ -69,7 +69,8 @@ def test_finds_the_suspect():
 def test_checker():
     repo = make_repo()
     p = ghosts.find_suspects(repo, ghosts.fix_commits(repo))[0]
-    good = dict(same_bug=True, quote_earlier="crash when x is None", quote_later="empty input again",
+    good = dict(same_bug=True, bug_earlier="crash", bug_later="crash",
+                quote_earlier="crash when x is None", quote_later="empty input again",
                 why="Both fix the same crash.", epitaph="It never stayed dead.")
     assert ghosts.check(good, p) == []
     bad = dict(good, quote_earlier="crash when x is missing", why="It came back after 3,527 years.")
@@ -78,11 +79,13 @@ def test_checker():
     assert any("3" in x for x in problems)
 
 
-def test_end_to_end_with_retry(tmp_path=None):
-    repo = make_repo()
-    good = dict(same_bug=True, quote_earlier="Fix crash when x is None", quote_later="crash on empty input",
-                why="Both fix a crash on missing input.", epitaph="Buried twice, still restless.")
-    Fake.answers = [dict(good, quote_later="made up words"), good]  # first answer fails the checker
+GOOD = dict(same_bug=True, bug_earlier="crash on None", bug_later="crash on empty input",
+            quote_earlier="Fix crash when x is None", quote_later="crash on empty input",
+            why="Both fix a crash on missing input.", epitaph="Buried twice, still restless.")
+
+
+def run_main(repo, answers):
+    Fake.answers = list(answers)
     srv = HTTPServer(("127.0.0.1", 0), Fake)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     ghosts.OLLAMA_URL = f"http://127.0.0.1:{srv.server_port}"
@@ -94,9 +97,26 @@ def test_end_to_end_with_retry(tmp_path=None):
     finally:
         os.chdir(cwd)
         srv.shutdown()
-    assert Fake.answers == []  # it retried once
-    page = open(os.path.join(out, f"ghosts_{os.path.basename(repo)}.html"), encoding="utf-8").read()
+    assert Fake.answers == []
+    return open(os.path.join(out, f"ghosts_{os.path.basename(repo)}.html"), encoding="utf-8").read()
+
+
+def test_end_to_end_with_retry():
+    # First answer fails the checker, the retry passes, the flipped question agrees.
+    page = run_main(make_repo(), [dict(GOOD, quote_later="made up words"), GOOD,
+                                  dict(different_bugs=False, why="Same crash.")])
     assert "Buried twice, still restless." in page and "after one retry" in page
+
+
+def test_flip_disagrees_drops_the_ghost():
+    page = run_main(make_repo(), [GOOD, dict(different_bugs=True, why="Two different bugs.")])
+    assert "No ghosts" in page
+
+
+def test_docs_and_tests_only_are_not_suspects():
+    assert ghosts.NOT_CODE.search("docs/index.rst") and ghosts.NOT_CODE.search("tests/test_x.py")
+    assert ghosts.NOT_CODE.search("CHANGES.rst") and ghosts.NOT_CODE.search("src/pkg/test_util.py")
+    assert not ghosts.NOT_CODE.search("src/click/core.py")
 
 
 if __name__ == "__main__":

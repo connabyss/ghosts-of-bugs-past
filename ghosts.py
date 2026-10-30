@@ -25,6 +25,9 @@ BORING = re.compile(
     r"\b(typo|typos|lint|linting|format|formatting|whitespace|style|docs?|readme|"
     r"changelog|comment|comments|spelling|ci|deps|dependencies|bump)\b", re.I)
 SKIP_START = re.compile(r"^(revert|merge)\b", re.I)
+NOT_CODE = re.compile(
+    r"(^|/)(docs?|tests?|testing|examples?)/|(^|/)test_[^/]*$|_test\.\w+$|\.(rst|md|txt|cfg|toml|ini|ya?ml|json|lock)$"
+    r"|(^|/)(CHANGES|CHANGELOG|HISTORY|NEWS|README)[^/]*$", re.I)
 OLLAMA_URL = os.environ.get("GHOSTS_OLLAMA_URL", "http://localhost:11434")
 
 
@@ -107,8 +110,19 @@ def find_suspects(repo, fixes, last=None):
                 p["lines"] += n
                 p["files"].add(path)
     # Same-day follow-ups are usually "oops, finish the fix", not a bug coming back.
-    out = [p for p in pairs.values()
-           if p["later"]["when"] - p["earlier"]["when"] > 24 * 3600]
+    # Only code counts: docs and tests get rewritten all the time without a bug coming back.
+    out, seen = [], set()
+    for p in sorted(pairs.values(), key=lambda p: -p["lines"]):
+        if p["later"]["when"] - p["earlier"]["when"] <= 24 * 3600:
+            continue
+        if not any(not NOT_CODE.search(f) for f in p["files"]):
+            continue
+        # The same change landed twice (e.g. on two branches): keep one.
+        key = (p["earlier"]["sha"], p["later"]["subject"], p["lines"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
     out.sort(key=lambda p: -p["lines"])
     return out
 
@@ -126,20 +140,27 @@ def message(c):
 SCHEMA = {
     "type": "object",
     "properties": {
-        "same_bug": {"type": "boolean"},
+        "bug_earlier": {"type": "string"},
+        "bug_later": {"type": "string"},
         "quote_earlier": {"type": "string"},
         "quote_later": {"type": "string"},
+        "same_bug": {"type": "boolean"},
         "why": {"type": "string"},
         "epitaph": {"type": "string"},
     },
-    "required": ["same_bug", "quote_earlier", "quote_later", "why", "epitaph"],
+    "required": ["bug_earlier", "bug_later", "quote_earlier", "quote_later",
+                 "same_bug", "why", "epitaph"],
+}
+FLIP_SCHEMA = {
+    "type": "object",
+    "properties": {"different_bugs": {"type": "boolean"}, "why": {"type": "string"}},
+    "required": ["different_bugs", "why"],
 }
 
 
-def build_prompt(repo, p, feedback=""):
+def evidence(repo, p):
     e, l = p["earlier"], p["later"]
-    return f"""Two commits from one git project. Both say they fix something.
-The LATER commit rewrote lines that the EARLIER commit wrote.
+    return f"""Two commits from one git project, in time order. Both touch the same code.
 
 EARLIER COMMIT MESSAGE:
 {message(e)}
@@ -152,24 +173,40 @@ LATER COMMIT MESSAGE:
 
 LATER COMMIT CHANGES:
 {commit_diff(repo, l, p["files"])}
+"""
 
-Question: is the later commit fixing THE SAME bug again, because the earlier fix
-did not fully hold? Answer true only if both commits are about the same broken
-behavior. A different bug in the same code, a cleanup, or a new feature is false.
+
+def build_prompt(repo, p, feedback=""):
+    return evidence(repo, p) + f"""
+Most pairs like this are NOT the same bug: code gets touched again for new features,
+cleanups, tests, or a different bug nearby. Be strict.
 
 Reply in JSON:
-- same_bug: true or false
+- bug_earlier: in a few words, the broken behavior the EARLIER commit fixed
+- bug_later: in a few words, the broken behavior the LATER commit fixed
 - quote_earlier: a short phrase copied word for word from the EARLIER COMMIT MESSAGE
 - quote_later: a short phrase copied word for word from the LATER COMMIT MESSAGE
+- same_bug: true ONLY if bug_earlier and bug_later are the same broken behavior, so the
+  earlier fix did not hold (it was incomplete, wrong, or broke again). Otherwise false.
 - why: one plain sentence explaining your answer
 - epitaph: one short spooky gravestone line for the bug (no numbers, no names)
 {feedback}"""
 
 
-def ask_model(model, prompt):
+def build_flip_prompt(repo, p):
+    return evidence(repo, p) + """
+Question: do these two commits fix DIFFERENT problems? Answer true if they fix different
+broken behaviors, or if either one is not really a bug fix. Answer false only if the later
+commit fixes the very same broken behavior again, because the earlier fix did not hold.
+
+Reply in JSON: different_bugs (true or false), why (one plain sentence).
+"""
+
+
+def ask_model(model, prompt, schema=SCHEMA):
     req = urllib.request.Request(
         OLLAMA_URL + "/api/generate",
-        data=json.dumps({"model": model, "prompt": prompt, "format": SCHEMA, "stream": False,
+        data=json.dumps({"model": model, "prompt": prompt, "format": schema, "stream": False,
                          "options": {"temperature": 0, "seed": 42}}).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
@@ -201,13 +238,20 @@ def judge(repo, model, p):
     """Ask once; on a failed check, ask again with the reason. Returns (answer, path)."""
     answer = ask_model(model, build_prompt(repo, p))
     problems = check(answer, p)
-    if not problems:
-        return answer, "first try"
-    feedback = "\nYour last answer was rejected: " + "; ".join(problems) + ". Fix that."
-    answer = ask_model(model, build_prompt(repo, p, feedback))
-    if not check(answer, p):
-        return answer, "after one retry"
-    return None, "dropped: failed the checker twice"
+    how = "first try"
+    if problems:
+        feedback = "\nYour last answer was rejected: " + "; ".join(problems) + ". Fix that."
+        answer = ask_model(model, build_prompt(repo, p, feedback))
+        if check(answer, p):
+            return None, "dropped: failed the checker twice"
+        how = "after one retry"
+    if answer["same_bug"]:
+        # Ask the opposite question. A ghost only counts if the model says the same thing both ways.
+        flip = ask_model(model, build_flip_prompt(repo, p), FLIP_SCHEMA)
+        if flip.get("different_bugs") is not False:
+            return None, "dropped: said 'same bug', then 'different bugs' when asked the other way"
+        how += ", same answer when asked the other way"
+    return answer, how
 
 
 def day(ts):
