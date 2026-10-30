@@ -56,6 +56,10 @@ commits: 2 real ghosts, 2 fixes that caused a new bug, 4 different problems. Res
 Eight pairs is a small set, and the prompts were tuned while looking at it, so treat these as a sanity
 check, not a benchmark. In the last row, most false ghosts were stopped by the second ask, not the first.
 
+On real runs (click and requests, top 12 each) Gemma 3 12B called 14 ghosts: by hand, 1 is clearly real,
+6 might be, 7 are not. See [HAND_CHECK.md](HAND_CHECK.md). Read ghosts as leads, and trust the git receipt
+most.
+
 ## Self-test (no model needed)
 
 ```
