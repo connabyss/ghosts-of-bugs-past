@@ -9,9 +9,12 @@ says "fix it again". This tool digs those up.
   both commit messages and both diffs, and says whether it's the same bug coming back.
 - **A plain checker keeps the model honest.** It must quote both commit messages word for word, and it may
   not invent numbers. If it fails, it gets one retry with the reason, then the answer is dropped.
-- **It has to say it both ways.** A "same bug" answer only counts if the model also says "not different
-  bugs" when asked the opposite question. The first version skipped this, and Gemma called all 15 suspects
-  in click a ghost.
+- **It has to say it twice.** The verdict is a choice between two phrases, "same bug came back" or
+  "different problem", and the model is asked a second time with the choices in the opposite order. A ghost
+  only counts if both answers agree. Small models lean towards "yes" on yes/no questions: the first version
+  called all 15 suspects in click a ghost, and a yes/no double check then called none of them one.
+- **Git adds a receipt.** Each ghost shows whether the later commit message points back at the earlier fix
+  (its commit id, a shared issue number, or words like "regression" or "properly").
 
 Your code never leaves your machine.
 
@@ -25,7 +28,8 @@ git clone https://github.com/pallets/click
 python ghosts.py click
 ```
 
-It prints each ghost and writes a graveyard page, `ghosts_click.html`.
+It prints each ghost and writes a graveyard page, `ghosts_click.html`, plus `ghosts_click_log.json` with
+everything the model said about every suspect.
 
 Options: `--model gemma3:12b` (a bigger model), `--max 30` (how many suspects to ask about),
 `--last 200` (only the last 200 fix commits).

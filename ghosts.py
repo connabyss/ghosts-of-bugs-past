@@ -137,6 +137,9 @@ def message(c):
     return (c["subject"] + ("\n\n" + c["body"] if c["body"] else ""))[:1500]
 
 
+# Small models lean towards "true" on yes/no questions, so the verdict is a choice of two
+# phrases, and the second ask lists them in the opposite order.
+SAME, DIFFERENT = "same bug came back", "different problem"
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -144,18 +147,36 @@ SCHEMA = {
         "bug_later": {"type": "string"},
         "quote_earlier": {"type": "string"},
         "quote_later": {"type": "string"},
-        "same_bug": {"type": "boolean"},
+        "verdict": {"type": "string", "enum": [DIFFERENT, SAME]},
         "why": {"type": "string"},
         "epitaph": {"type": "string"},
     },
     "required": ["bug_earlier", "bug_later", "quote_earlier", "quote_later",
-                 "same_bug", "why", "epitaph"],
+                 "verdict", "why", "epitaph"],
 }
 FLIP_SCHEMA = {
     "type": "object",
-    "properties": {"different_bugs": {"type": "boolean"}, "why": {"type": "string"}},
-    "required": ["different_bugs", "why"],
+    "properties": {"verdict": {"type": "string", "enum": [SAME, DIFFERENT]},
+                   "why": {"type": "string"}},
+    "required": ["verdict", "why"],
 }
+CONFESSION = re.compile(r"\b(regression|regressed|again|properly|re-?fix|broke|broken|still|reintroduced|"
+                        r"did not|didn't|incomplete)\b", re.I)
+
+
+def receipt(p):
+    """What git itself says: does the later message point back at the earlier fix?"""
+    e, l = p["earlier"], p["later"]
+    later = message(l)
+    refs = set(re.findall(r"#\d+", message(e))) & set(re.findall(r"#\d+", later))
+    if e["sha"][:7] in later:
+        return f'the later message names commit {e["sha"][:7]}'
+    if refs:
+        return "both messages mention " + ", ".join(sorted(refs))
+    m = CONFESSION.search(later)
+    if m:
+        return f'the later message says "{m.group(0)}"'
+    return ""
 
 
 def evidence(repo, p):
@@ -186,31 +207,36 @@ Reply in JSON:
 - bug_later: in a few words, the broken behavior the LATER commit fixed
 - quote_earlier: a short phrase copied word for word from the EARLIER COMMIT MESSAGE
 - quote_later: a short phrase copied word for word from the LATER COMMIT MESSAGE
-- same_bug: true ONLY if bug_earlier and bug_later are the same broken behavior, so the
-  earlier fix did not hold (it was incomplete, wrong, or broke again). Otherwise false.
+- verdict: "{DIFFERENT}" or "{SAME}". Pick "{SAME}" ONLY if bug_earlier
+  and bug_later are the same broken behavior, so the earlier fix did not hold (it was
+  incomplete, wrong, or broke again).
 - why: one plain sentence explaining your answer
 - epitaph: one short spooky gravestone line for the bug (no numbers, no names)
 {feedback}"""
 
 
 def build_flip_prompt(repo, p):
-    return evidence(repo, p) + """
-Question: do these two commits fix DIFFERENT problems? Answer true if they fix different
-broken behaviors, or if either one is not really a bug fix. Answer false only if the later
-commit fixes the very same broken behavior again, because the earlier fix did not hold.
+    return evidence(repo, p) + f"""
+Pick one:
+- "{SAME}": the later commit fixes the very same broken behavior again, because the
+  earlier fix did not hold.
+- "{DIFFERENT}": they fix different broken behaviors, or one is not really a bug fix.
 
-Reply in JSON: different_bugs (true or false), why (one plain sentence).
+Reply in JSON: verdict (one of the two phrases above), why (one plain sentence).
 """
 
 
 def ask_model(model, prompt, schema=SCHEMA):
+    """The model's JSON answer, plus same_bug worked out from its verdict."""
     req = urllib.request.Request(
         OLLAMA_URL + "/api/generate",
         data=json.dumps({"model": model, "prompt": prompt, "format": schema, "stream": False,
                          "options": {"temperature": 0, "seed": 42}}).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
-        return json.loads(json.loads(r.read())["response"])
+        answer = json.loads(json.loads(r.read())["response"])
+    answer["same_bug"] = answer.get("verdict") == SAME
+    return answer
 
 
 def norm(s):
@@ -229,27 +255,32 @@ def check(answer, p):
         for num in re.findall(r"\d+", str(answer.get(key, ""))):
             if num not in facts:
                 problems.append(f'{key} uses the number {num}, which is not in either message')
-    if not isinstance(answer.get("same_bug"), bool):
-        problems.append("same_bug must be true or false")
+    if answer.get("verdict") not in (SAME, DIFFERENT):
+        problems.append(f'verdict must be "{SAME}" or "{DIFFERENT}"')
     return problems
 
 
-def judge(repo, model, p):
-    """Ask once; on a failed check, ask again with the reason. Returns (answer, path)."""
+def judge(repo, model, p, trace=None):
+    """Ask once; on a failed check, ask again with the reason. Returns (answer, path).
+    Every raw model answer is appended to trace, so a run can be read back later."""
+    trace = [] if trace is None else trace
     answer = ask_model(model, build_prompt(repo, p))
+    trace.append(answer)
     problems = check(answer, p)
     how = "first try"
     if problems:
         feedback = "\nYour last answer was rejected: " + "; ".join(problems) + ". Fix that."
         answer = ask_model(model, build_prompt(repo, p, feedback))
+        trace.append(answer)
         if check(answer, p):
             return None, "dropped: failed the checker twice"
         how = "after one retry"
     if answer["same_bug"]:
         # Ask the opposite question. A ghost only counts if the model says the same thing both ways.
         flip = ask_model(model, build_flip_prompt(repo, p), FLIP_SCHEMA)
-        if flip.get("different_bugs") is not False:
-            return None, "dropped: said 'same bug', then 'different bugs' when asked the other way"
+        trace.append(flip)
+        if not flip["same_bug"]:
+            return None, "dropped: said 'same bug', then 'different problem' when asked the other way"
         how += ", same answer when asked the other way"
     return answer, how
 
@@ -267,6 +298,7 @@ def tombstone(p, answer, model):
         f'  {days} days in the grave. The second fix rewrote {p["lines"]} line(s) the first one wrote,',
         f'  in {", ".join(sorted(p["files"]))}.',
         f'  {model}: {answer["why"]}',
+        f'  Git receipt: {receipt(p) or "none, the later message does not point back"}',
         f'  "{answer["epitaph"]}"',
     ])
 
@@ -280,7 +312,8 @@ def write_html(path, repo_name, ghosts):
 <div class="dates">{day(e["when"])} &ndash; {day(l["when"])}</div>
 <div class="epi">&ldquo;{html.escape(answer["epitaph"])}&rdquo;</div>
 <div class="why">Came back as: {html.escape(l["subject"])}<br>{html.escape(answer["why"])}</div>
-<div class="sha">{e["sha"][:7]} &rarr; {l["sha"][:7]} &middot; checked by git, {how}</div></div>""")
+<div class="sha">{e["sha"][:7]} &rarr; {l["sha"][:7]} &middot; {how}</div>
+<div class="sha">{html.escape(receipt(p) or "no git receipt")}</div></div>""")
     body = "\n".join(stones) or "<p>No ghosts. Every fix stayed buried.</p>"
     with open(path, "w", encoding="utf-8") as f:
         f.write(f"""<!doctype html><meta charset="utf-8"><title>Ghosts of bugs past</title>
@@ -311,14 +344,20 @@ def main(argv=None):
     print(f"{len(suspects)} later fixes rewrote an earlier fix's lines. "
           f"Asking {args.model} about the top {min(args.max, len(suspects))}.\n")
 
-    ghosts, dropped = [], 0
+    ghosts, dropped, log = [], 0, []
     for i, p in enumerate(suspects[:args.max], 1):
         print(f"[{i}] {p['earlier']['sha'][:7]} -> {p['later']['sha'][:7]} ...", end=" ", flush=True)
+        trace = []
         try:
-            answer, how = judge(repo, args.model, p)
+            answer, how = judge(repo, args.model, p, trace)
         except (urllib.error.URLError, ConnectionError) as err:
             sys.exit(f"\nCan't reach Ollama at {OLLAMA_URL} ({err}). Is it running? "
                      f"Try: ollama pull {args.model}")
+        verdict = how if answer is None else ("GHOST" if answer["same_bug"] else "different bug")
+        log.append(dict(earlier=p["earlier"]["sha"][:7], earlier_subject=p["earlier"]["subject"],
+                        later=p["later"]["sha"][:7], later_subject=p["later"]["subject"],
+                        lines=p["lines"], files=sorted(p["files"]), receipt=receipt(p),
+                        verdict=verdict, model_said=trace))
         if answer is None:
             dropped += 1
             print(how)
@@ -335,6 +374,10 @@ def main(argv=None):
     out = os.path.join(os.getcwd(), f"ghosts_{name}.html")
     write_html(out, name, ghosts)
     print(f"Graveyard: {out}")
+    log_path = os.path.join(os.getcwd(), f"ghosts_{name}_log.json")
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump(dict(repo=name, model=args.model, suspects=log), f, indent=1, ensure_ascii=False)
+    print(f"Everything the model said: {log_path}")
 
 
 if __name__ == "__main__":

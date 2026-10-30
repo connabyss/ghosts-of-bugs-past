@@ -69,7 +69,7 @@ def test_finds_the_suspect():
 def test_checker():
     repo = make_repo()
     p = ghosts.find_suspects(repo, ghosts.fix_commits(repo))[0]
-    good = dict(same_bug=True, bug_earlier="crash", bug_later="crash",
+    good = dict(same_bug=True, verdict=ghosts.SAME, bug_earlier="crash", bug_later="crash",
                 quote_earlier="crash when x is None", quote_later="empty input again",
                 why="Both fix the same crash.", epitaph="It never stayed dead.")
     assert ghosts.check(good, p) == []
@@ -79,7 +79,7 @@ def test_checker():
     assert any("3" in x for x in problems)
 
 
-GOOD = dict(same_bug=True, bug_earlier="crash on None", bug_later="crash on empty input",
+GOOD = dict(verdict=ghosts.SAME, bug_earlier="crash on None", bug_later="crash on empty input",
             quote_earlier="Fix crash when x is None", quote_later="crash on empty input",
             why="Both fix a crash on missing input.", epitaph="Buried twice, still restless.")
 
@@ -104,12 +104,13 @@ def run_main(repo, answers):
 def test_end_to_end_with_retry():
     # First answer fails the checker, the retry passes, the flipped question agrees.
     page = run_main(make_repo(), [dict(GOOD, quote_later="made up words"), GOOD,
-                                  dict(different_bugs=False, why="Same crash.")])
+                                  dict(verdict=ghosts.SAME, why="Same crash.")])
     assert "Buried twice, still restless." in page and "after one retry" in page
+    assert 'the later message says &quot;again&quot;' in page  # "Fix crash on empty input again"
 
 
 def test_flip_disagrees_drops_the_ghost():
-    page = run_main(make_repo(), [GOOD, dict(different_bugs=True, why="Two different bugs.")])
+    page = run_main(make_repo(), [GOOD, dict(verdict=ghosts.DIFFERENT, why="Two different bugs.")])
     assert "No ghosts" in page
 
 
