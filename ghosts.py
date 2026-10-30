@@ -181,22 +181,19 @@ def receipt(p):
     return ""
 
 
+SHOW_DIFFS = True  # off: the model judges from the two commit messages alone
+
+
 def evidence(repo, p):
     e, l = p["earlier"], p["later"]
-    return f"""Two commits from one git project, in time order. Both touch the same code.
-
-EARLIER COMMIT MESSAGE:
-{message(e)}
-
-EARLIER COMMIT CHANGES:
-{commit_diff(repo, e, p["files"])}
-
-LATER COMMIT MESSAGE:
-{message(l)}
-
-LATER COMMIT CHANGES:
-{commit_diff(repo, l, p["files"])}
-"""
+    parts = ["Two commits from one git project, in time order. Both touch the same code.",
+             "EARLIER COMMIT MESSAGE:\n" + message(e)]
+    if SHOW_DIFFS:
+        parts.append("EARLIER COMMIT CHANGES:\n" + commit_diff(repo, e, p["files"]))
+    parts.append("LATER COMMIT MESSAGE:\n" + message(l))
+    if SHOW_DIFFS:
+        parts.append("LATER COMMIT CHANGES:\n" + commit_diff(repo, l, p["files"]))
+    return "\n\n".join(parts) + "\n"
 
 
 def build_prompt(repo, p, feedback=""):

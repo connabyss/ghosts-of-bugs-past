@@ -31,7 +31,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("clones")
     ap.add_argument("--model", default="gemma3:4b")
+    ap.add_argument("--no-diffs", action="store_true", help="judge from commit messages only")
     args = ap.parse_args(argv)
+    ghosts.SHOW_DIFFS = not args.no_diffs
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     pairs = {}
@@ -54,7 +56,8 @@ def main(argv=None):
         for t in trace:
             print(f"      said: {t.get('verdict')} | {t.get('why', '')}")
     n_ghosts = sum(1 for *_, label, _ in LABELS if label == ghosts.SAME)
-    print(f"\nGhosts found: {ghost_hits} of {n_ghosts}. False ghosts: {ghost_false} of {len(LABELS) - n_ghosts}.")
+    print(f"\n{args.model}, diffs {'off' if args.no_diffs else 'on'}: ghosts found {ghost_hits} of {n_ghosts}, "
+          f"false ghosts {ghost_false} of {len(LABELS) - n_ghosts}.")
 
 
 if __name__ == "__main__":
